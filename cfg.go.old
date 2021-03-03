@@ -1,0 +1,173 @@
+// This is ini file parse
+// Sample:
+// func test() {
+//    cfg.ParseIniFile(FilePathName)
+//    println(cfg.GetAttr("aaaa", "ac"))
+// }
+
+package cfg
+
+import (
+	"book/slog"
+	"bufio"
+	"bytes"
+	"io"
+	"os"
+	"unicode"
+)
+
+const (
+	stat_none = iota
+	stat_group
+	stat_key
+	stat_value
+	stat_comment
+)
+
+// groupAttrs[Attr Name]=Attr Value
+type groupAttrs map[string]string
+
+// configs[group name]=groupAttrs
+type configs map[string]groupAttrs
+
+type decoder struct {
+	r     io.ByteReader `ini source`
+	cfgs  configs       `real config date`
+	state int           `working status`
+	b     byte          `temp byte`
+	t     bytes.Buffer  `temp token buff`
+	gn    string        `current group name`
+	kn    string        `current key name`
+	fv    bool          `first value space flag`
+}
+
+var d *decoder = nil
+
+//parse a ini file
+func ParseIniFile(f string) {
+	iniFile, err := os.Open(f)
+	if err != nil {
+		slog.Errorf("Open INI file(%s) error:%s", f, err)
+		d = nil
+		return
+	}
+	defer iniFile.Close()
+	ParseIni(iniFile)
+}
+
+//parse ini from io stream
+func ParseIni(r io.Reader) {
+	d = &decoder{}
+
+	if rb, ok := r.(io.ByteReader); ok {
+		d.r = rb
+	} else {
+		d.r = bufio.NewReader(r)
+	}
+
+	parse()
+	if d == nil {
+		slog.Error("Error parse ini info!")
+		return
+	}
+
+	slog.Info("Parse ini finished, result is:", d.cfgs)
+}
+
+// GetAttr(group name, attr name)
+func GetAttr(gname string, aname string) string {
+	if d == nil {
+		return ""
+	}
+	gattrs, ok := d.cfgs[gname]
+	if !ok {
+		return ""
+	}
+
+	attr, ok := gattrs[aname]
+	if !ok {
+		return ""
+	}
+	return attr
+}
+
+func parse() {
+	var err error
+	d.cfgs = make(configs)
+	d.state = stat_none
+	for {
+		d.b, err = d.r.ReadByte()
+		if err != nil {
+			break
+		}
+		switch d.state {
+		case stat_none:
+			switch {
+			case d.b == '[':
+				d.state = stat_group
+			case d.b == '#':
+				d.state = stat_comment
+			case d.b == '=':
+				slog.Error("Ini file format err:no key name before '='!")
+				d = nil
+				return
+			case !unicode.IsSpace(rune(d.b)):
+				d.state = stat_key
+				d.t.WriteByte(byte(d.b))
+			}
+		case stat_group:
+			switch {
+			case d.b == ']':
+				d.state = stat_none
+				d.gn = d.t.String()
+				if _, ok := d.cfgs[d.gn]; !ok {
+					d.cfgs[d.gn] = make(groupAttrs)
+				}
+				d.t.Reset()
+			case d.b == '\n':
+				slog.Error("Ini file format err:expert group end ']' before return!")
+				d = nil
+				return
+			case !unicode.IsSpace(rune(d.b)):
+				d.t.WriteByte(d.b)
+			}
+		case stat_key:
+			switch {
+			case d.b == '=':
+				d.state = stat_value
+				d.fv = true
+				d.kn = d.t.String()
+				d.t.Reset()
+			case d.b == '\n':
+				slog.Error("Ini file format err:expert key end '=' before return!")
+				d = nil
+				return
+			case !unicode.IsSpace(rune(d.b)):
+				d.t.WriteByte(d.b)
+			}
+		case stat_value:
+			if d.b != '\n' {
+				if !d.fv || !unicode.IsSpace(rune(d.b)) {
+					if d.b != '\r' {
+						d.t.WriteByte(d.b)
+					}
+					d.fv = false
+				}
+			} else {
+				if _, ok := d.cfgs[d.gn]; !ok {
+					d.cfgs[d.gn] = make(groupAttrs)
+				}
+				d.cfgs[d.gn][d.kn] = d.t.String()
+				d.state = stat_none
+				d.t.Reset()
+			}
+		case stat_comment:
+			if d.b == '\n' {
+				d.state = stat_none
+				d.t.Reset()
+			}
+		default:
+			d.state = stat_none
+		}
+	}
+}
