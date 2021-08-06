@@ -1,3 +1,3 @@
-module cloudgao.vicp.net/go/util/cfg
+module github.com/go-cfg
 
 go 1.16
